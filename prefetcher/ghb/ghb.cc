@@ -4,12 +4,13 @@
 #include <cinttypes>
 #include <iostream>
 #include "cache.h"
+#include "champsim.h"
 #include "extent.h"
 
 ghb::IndexTable::IndexTable() {
   {
     for (size_t i = 0; i < INDEX_ENTRIES; i++) {
-      this->entries[i].trigger = champsim::address{0};
+      this->entries[i].trigger = champsim::block_number{0};
     }
   }
 }
@@ -23,8 +24,19 @@ ghb::GlobalHistoryBuffer::GlobalHistoryBuffer() {
   }
 }
 
+bool ghb::is_valid_ghbe(ghb_ptr_t ptr) {
+  bool is_too_old = std::abs(static_cast<int>(ptr) - static_cast<int>(initial_trigger)) >= GHB_ENTRIES;
+  bool has_null_target = GHB.entries[ptr % GHB_PTR_SIZE].target_addr == champsim::block_number{0};
+  return !is_too_old && !has_null_target;
+}
+
+// Is this GHB entry the terminal node in the linked list
+bool ghb::has_next_ghbe(ghb_ptr_t ptr) {
+  return GHB.entries[ptr % GHB_PTR_SIZE].next != ptr;
+}
+
 ghb::ghb_ptr_t ghb::make_ghb_ptr(ghb_ptr_t ptr) {
-  return static_cast<ghb_ptr_t>((ptr & (GHB_PTR_SIZE-1)) | (GHB.generation << GHB_PTR_BITS));
+  return static_cast<ghb_ptr_t>(((ptr & (GHB_PTR_SIZE-1)) % GHB_ENTRIES) | (GHB.generation << GHB_PTR_BITS));
 }
 
 void ghb::prefetcher_initialize() {
@@ -47,35 +59,33 @@ std::size_t ghb::get_hash(champsim::address addr) {
 uint32_t ghb::prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit,
                                   bool useful_prefetch, access_type type, uint32_t metadata_in)
 {
-  // std::cout << "[DEBUG] 1" << std::endl;
   if (cache_hit || type != access_type::LOAD ) {
     return 0;
   }
   // Retrieve/compute relevant data
   size_t hash = get_hash(addr);
-  std::cout << "[DEBUG] addr: " << addr << " hash: " << hash << std::endl;
+  // std::cout << std::endl << "[DEBUG] addr: " << addr << " hash: " << hash << std::endl;
   const bool hash_collision = champsim::block_number{IT.entries[hash].trigger} != champsim::block_number{addr};
-  std::cout << "[DEBUG] " << " IT.entries[hash].trigger " << champsim::block_number{IT.entries[hash].trigger} << " collision: " << hash_collision << std::endl;
-  const ghb_ptr_t head = GHB.head % GHB_ENTRIES;
-  std::cout << "[DEBUG] head: " << head << std::endl;
-  // Add new GHB entry at head
-  // std::cout << "[DEBUG] 3" << std::endl;
+  // std::cout << "[DEBUG] block_number{addr}: " << champsim::block_number{addr} << " IT.entries[hash].trigger: " << champsim::block_number{IT.entries[hash].trigger} << " collision: " << hash_collision << std::endl;
+  const ghb_ptr_t head = GHB.head;
+  const ghb_ptr_t head_idx = GHB.head % GHB_PTR_SIZE; // used for indexing
   // std::cout << "[DEBUG] head: " << head << std::endl;
-  // std::cout << "[DEBUG] hash collision: " << hash_collision << std::endl;
-  GHB.entries[head].target_addr = champsim::block_number{addr};
-  GHB.entries[head].next = make_ghb_ptr(hash_collision ? head : IT.entries[hash].ghb_ptr);
-  std::cout << "[DEBUG] GHB.entries[head].next: " << GHB.entries[head].next << std::endl;
+  // Add new GHB entry at head
+  GHB.entries[head_idx].target_addr = champsim::block_number{addr};
+  GHB.entries[head_idx].next = make_ghb_ptr(hash_collision ? head : IT.entries[hash].ghb_ptr);
+  // std::cout << "[DEBUG] :: next: " << GHB.entries[head_idx].next << " generation: " << GHB.generation << std::endl;
+  if (!hash_collision) {
+    std::cout << std::endl << "[DEBUG] Found correlation when head: " << head << " @ IT.entries[hash].ghb_ptr: " << IT.entries[hash].ghb_ptr << std::endl;
+  }
   // Update IT entry
-  // std::cout << "[DEBUG] 4" << std::endl;
   IT.entries[hash].trigger = champsim::block_number{addr};
   IT.entries[hash].ghb_ptr = head;
   // Update shared data - these pointers are always one before the next prefetch
-  // std::cout << "[DEBUG] 5" << std::endl;
   cur_wide_ptr = head;
   initial_trigger = head;
-  GHB.generation += (head + 1 == GHB_ENTRIES) % champsim::next_pow2(GHB_GEN_BITS);
-  GHB.head = make_ghb_ptr((head + 1) % GHB_ENTRIES);
-  // Begin prefetching
+  GHB.generation = (GHB.generation + (head_idx + 1 == GHB_ENTRIES)) % GHB_GENERATIONS;
+  GHB.head = make_ghb_ptr(head + 1);
+  // Begin prefetching - each new miss resets prefetcher
   wide_prefetch_counter = 0;
   deep_prefetch_counter = 0;
   return 0;
@@ -87,45 +97,52 @@ void ghb::prefetcher_cycle_operate() {
   if (wide_prefetch_counter >= PREFETCH_WIDTH) {
     return;
   }
+  // std::cout << "[DEBUG] Let's prefetch!" << std::endl;
   // Cache old values
   // Every cycle, follow a pointer and prefetch what it points to
   const bool prefetch_wide = (deep_prefetch_counter % PREFETCH_DEPTH) == 0;
+
+  // Go wide, if necessary
   if (prefetch_wide) {
-    if (std::abs(static_cast<int>(cur_wide_ptr) - static_cast<int>(initial_trigger)) >= GHB_PTR_SIZE) {
+    if (!is_valid_ghbe(cur_wide_ptr) || !has_next_ghbe(cur_wide_ptr)) {
+      // std::cout << "[DEBUG] (1.a) Darn.. is_valid_ghbe: " << is_valid_ghbe(cur_wide_ptr) << " has_next_ghbe: " << has_next_ghbe(cur_wide_ptr)  << std::endl;
       wide_prefetch_counter = PREFETCH_WIDTH;
       return;
     }
-    if (cur_wide_ptr == GHB.entries[cur_wide_ptr].next) {
-      wide_prefetch_counter = PREFETCH_WIDTH;
-      return;
-    }
-    cur_wide_ptr = GHB.entries[cur_wide_ptr].next;
+    std::cout << "[DEBUG] (1.b) Go Wide" << std::endl;
+    cur_wide_ptr = GHB.entries[cur_wide_ptr % GHB_PTR_SIZE].next;
     wide_prefetch_counter += 1;
     cur_deep_ptr = cur_wide_ptr;
   }
 
   // Go deep
-  if (
-    deep_prefetch_counter >= PREFETCH_DEPTH
-    || std::abs(static_cast<int>(cur_deep_ptr) - static_cast<int>(initial_trigger)) >= GHB_PTR_SIZE
-  ) {
+  if (!is_valid_ghbe(cur_deep_ptr)) {
+    std::cout << "[DEBUG] (2.a) Darn.. is_valid_ghbe: " << is_valid_ghbe(cur_deep_ptr) << " has_next_ghbe: " << has_next_ghbe(cur_deep_ptr)  << std::endl;
+    std::cout << "        initial_trigger_ghbe: " << initial_trigger << " {gen: " << (initial_trigger >> GHB_PTR_BITS) << ", index: " << (initial_trigger & (GHB_PTR_SIZE-1)) << "}" << std::endl;
+    std::cout << "        GHB.entries[" << cur_deep_ptr << "]: {target: " << GHB.entries[cur_deep_ptr % GHB_PTR_SIZE].target_addr << ", next: " << GHB.entries[cur_deep_ptr % GHB_PTR_SIZE].next << "}" << std::endl;
+    std::cout << "        GHB.entries[{gen: " << (cur_deep_ptr >> GHB_PTR_BITS) << ", idx: " << (cur_deep_ptr % GHB_PTR_SIZE) << "}" << std::endl;
     deep_prefetch_counter = 0;
     return;
   }
-  if (cur_deep_ptr == GHB.entries[cur_deep_ptr].next) {
+  std::cout << "[DEBUG] (2.b) Go Deep" << std::endl;
+  // std::cout << "[Debug] Subtracting one from " << cur_deep_ptr << " gives " << (cur_deep_ptr - 1) % GHB_PTR_SIZE << std::endl;
+  cur_deep_ptr = cur_deep_ptr == 0 ? GHB_ENTRIES - 1 : cur_deep_ptr - 1;
+  deep_prefetch_counter = (deep_prefetch_counter + 1) % PREFETCH_DEPTH;
+
+  // Perform prefetch of line
+  if (!is_valid_ghbe(cur_deep_ptr)) {
     deep_prefetch_counter = 0;
     return;
   }
-  cur_deep_ptr = (cur_deep_ptr - 1) % GHB_ENTRIES;
-  deep_prefetch_counter += 1;
-  champsim::address next_prefetch_addr = GHB.entries[cur_deep_ptr].target_addr;
-  prefetch_line(next_prefetch_addr, true, 0);
+  std::cout << "[Debug] (3) Line valid. attemping prefetch" << std::endl;
+  champsim::block_number next_prefetch_addr = GHB.entries[cur_deep_ptr % GHB_PTR_SIZE].target_addr;
+  prefetch_line(champsim::address{next_prefetch_addr}, true, 0);
 }
 
-uint32_t ghb::prefetcher_cache_fill(
-  champsim::address addr, uint32_t set, uint32_t way,
-  bool prefetch, champsim::address evicted_address, uint32_t metadata_in
-)
-{
-  return metadata_in;
-}
+// uint32_t ghb::prefetcher_cache_fill(
+//   champsim::address addr, uint32_t set, uint32_t way,
+//   bool prefetch, champsim::address evicted_address, uint32_t metadata_in
+// )
+// {
+//   return metadata_in;
+// }
