@@ -64,7 +64,7 @@ def relroot(abspath):
     champsim_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.relpath(abspath, start=champsim_root)
 
-def get_makefile_lines(build_id, executable, module_info):
+def get_makefile_lines(build_id, executable, module_info, config_file=None):
     ''' Generate all of the lines to be written in a particular configuration's makefile '''
     yield from header({
         'Build ID': build_id,
@@ -76,6 +76,11 @@ def get_makefile_lines(build_id, executable, module_info):
     exe_basename = os.path.join('$(BIN_ROOT)', exe_basename)
     yield from hard_assign_variable('BIN_ROOT', exe_dirname)
     yield from hard_assign_variable('build_id', build_id, targets=["compile_commands", exe_basename])
+
+    compile_defines = (config_file or {}).get('compile_defines', {})
+    if compile_defines:
+        define_options = (f'-D{name}={value}' for name, value in compile_defines.items())
+        yield from append_variable('CPPFLAGS', *define_options, targets=[exe_basename])
 
     mod_paths = [relroot(mod["path"]) for mod in module_info.values()]
     yield from append_variable('nonbase_module_objs', '$(filter-out $(base_module_objs),$(call get_module_list,', *mod_paths, '))')

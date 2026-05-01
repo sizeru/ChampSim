@@ -1,5 +1,6 @@
 #Private stuff
 scripts
+configs/sweep
 #Worthless stuff
 out.txt
 stats.json

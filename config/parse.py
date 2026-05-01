@@ -293,7 +293,7 @@ class NormalizedConfiguration:
             print('P: vmem', list(self.vmem.keys()))
 
         self.root = util.subdict(config_file,
-            ('block_size', 'page_size', 'heartbeat_frequency')
+            ('block_size', 'page_size', 'heartbeat_frequency', 'compile_defines')
         )
 
     def merge(self, rhs):
@@ -445,6 +445,7 @@ class NormalizedConfiguration:
 
         config_extern = {
             **util.subdict(root_config, ('block_size', 'page_size', 'heartbeat_frequency')),
+            **util.subdict(root_config, ('compile_defines',)),
             'num_cores': len(cores)
         }
 
