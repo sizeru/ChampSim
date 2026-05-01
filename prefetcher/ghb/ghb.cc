@@ -1,5 +1,6 @@
 #include "ghb.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cinttypes>
 #include <iostream>
@@ -25,18 +26,44 @@ ghb::GlobalHistoryBuffer::GlobalHistoryBuffer() {
 }
 
 bool ghb::is_valid_ghbe(ghb_ptr_t ptr) {
-  bool is_too_old = std::abs(static_cast<int>(ptr) - static_cast<int>(initial_trigger)) >= GHB_ENTRIES;
-  bool has_null_target = GHB.entries[ptr % GHB_PTR_SIZE].target_addr == champsim::block_number{0};
+  bool is_too_old = calc_ghbe_distance(ptr, initial_trigger) >= GHB_ENTRIES;
+  bool has_null_target = GHB.entries[entry_index(ptr)].target_addr == champsim::block_number{0};
   return !is_too_old && !has_null_target;
 }
 
 // Is this GHB entry the terminal node in the linked list
 bool ghb::has_next_ghbe(ghb_ptr_t ptr) {
-  return GHB.entries[ptr % GHB_PTR_SIZE].next != ptr;
+  return GHB.entries[entry_index(ptr)].next != ptr;
+}
+
+ghb::ghb_ptr_t ghb::entry_index(ghb_ptr_t ptr) {
+  return static_cast<ghb_ptr_t>((ptr & (GHB_PTR_SIZE - 1)) % GHB_ENTRIES);
+}
+
+std::size_t ghb::calc_ghbe_distance(ghb_ptr_t lhs, ghb_ptr_t rhs) {
+	// Need a logical index since entries aren't necessarily powers of 2
+  std::size_t lhs_generation = lhs >> GHB_PTR_BITS;
+  std::size_t rhs_generation = rhs >> GHB_PTR_BITS;
+  std::size_t lhs_logical = lhs_generation * GHB_ENTRIES + entry_index(lhs);
+  std::size_t rhs_logical = rhs_generation * GHB_ENTRIES + entry_index(rhs);
+  std::size_t ring_size = GHB_GENERATIONS * GHB_ENTRIES;
+
+  std::size_t direct_distance = lhs_logical >= rhs_logical ? lhs_logical - rhs_logical : rhs_logical - lhs_logical;
+  return std::min(direct_distance, ring_size - direct_distance);
 }
 
 ghb::ghb_ptr_t ghb::make_ghb_ptr(ghb_ptr_t ptr) {
-  return static_cast<ghb_ptr_t>(((ptr & (GHB_PTR_SIZE-1)) % GHB_ENTRIES) | (GHB.generation << GHB_PTR_BITS));
+  return static_cast<ghb_ptr_t>(entry_index(ptr) | (GHB.generation << GHB_PTR_BITS));
+}
+
+ghb::ghb_ptr_t ghb::previous_ghb_ptr(ghb_ptr_t ptr) {
+  ghb_ptr_t generation = ptr >> GHB_PTR_BITS;
+  ghb_ptr_t idx = entry_index(ptr);
+  if (idx == 0) {
+    ghb_ptr_t prev_generation = (generation + GHB_GENERATIONS - 1) % GHB_GENERATIONS;
+    return static_cast<ghb_ptr_t>((GHB_ENTRIES - 1) | (prev_generation << GHB_PTR_BITS));
+  }
+  return static_cast<ghb_ptr_t>((idx - 1) | (generation << GHB_PTR_BITS));
 }
 
 void ghb::prefetcher_initialize() {
@@ -66,7 +93,7 @@ uint32_t ghb::prefetcher_cache_operate(champsim::address addr, champsim::address
   size_t hash = get_hash(addr);
   const bool hash_collision = champsim::block_number{IT.entries[hash].trigger} != champsim::block_number{addr};
   const ghb_ptr_t head = GHB.head;
-  const ghb_ptr_t head_idx = GHB.head % GHB_PTR_SIZE; // used for indexing
+  const ghb_ptr_t head_idx = entry_index(GHB.head); // used for indexing
   // Add new GHB entry at head
   GHB.entries[head_idx].target_addr = champsim::block_number{addr};
   GHB.entries[head_idx].next = make_ghb_ptr(hash_collision ? head : IT.entries[hash].ghb_ptr);
@@ -99,7 +126,7 @@ void ghb::prefetcher_cycle_operate() {
       wide_prefetch_counter = PREFETCH_WIDTH;
       return;
     }
-    cur_wide_ptr = GHB.entries[cur_wide_ptr % GHB_PTR_SIZE].next;
+    cur_wide_ptr = GHB.entries[entry_index(cur_wide_ptr)].next;
     wide_prefetch_counter += 1;
     cur_deep_ptr = cur_wide_ptr;
   }
@@ -109,7 +136,7 @@ void ghb::prefetcher_cycle_operate() {
     deep_prefetch_counter = 0;
     return;
   }
-  cur_deep_ptr = cur_deep_ptr == 0 ? GHB_ENTRIES - 1 : cur_deep_ptr - 1;
+  cur_deep_ptr = previous_ghb_ptr(cur_deep_ptr);
   deep_prefetch_counter = (deep_prefetch_counter + 1) % PREFETCH_DEPTH;
 
   // Perform prefetch of line
@@ -117,14 +144,6 @@ void ghb::prefetcher_cycle_operate() {
     deep_prefetch_counter = 0;
     return;
   }
-  champsim::block_number next_prefetch_addr = GHB.entries[cur_deep_ptr % GHB_PTR_SIZE].target_addr;
+  champsim::block_number next_prefetch_addr = GHB.entries[entry_index(cur_deep_ptr)].target_addr;
   prefetch_line(champsim::address{next_prefetch_addr}, true, 0);
 }
-
-// uint32_t ghb::prefetcher_cache_fill(
-//   champsim::address addr, uint32_t set, uint32_t way,
-//   bool prefetch, champsim::address evicted_address, uint32_t metadata_in
-// )
-// {
-//   return metadata_in;
-// }

@@ -1,26 +1,27 @@
 #ifndef GHB_H
 #define GHB_H
 
-#include <bitset>
-
 #include "cache.h"
 #include "modules.h"
-#include "msl/lru_table.h"
+
+#ifndef INDEX_ENTRIES
+#define INDEX_ENTRIES 80000
+#endif
+
+#ifndef GHB_ENTRIES
+#define GHB_ENTRIES 80000
+#endif
 
 // Global History Buffer
 struct ghb : public champsim::modules::prefetcher {
 
   // Parameters
-  constexpr static std::size_t GHB_ENTRIES = 80000;
-  constexpr static std::size_t INDEX_ENTRIES = 80000;
   constexpr static std::size_t GHB_GENERATIONS = 16;
   constexpr static std::size_t PREFETCH_DEPTH = 16;
   constexpr static std::size_t PREFETCH_WIDTH = 16;
   constexpr static std::size_t GHB_GEN_BITS = champsim::lg2(GHB_GENERATIONS);
   constexpr static std::size_t GHB_PTR_SIZE = champsim::next_pow2(GHB_ENTRIES);
   constexpr static std::size_t GHB_PTR_BITS = champsim::lg2(GHB_PTR_SIZE);
-  // Derived params
-  // constexpr static champsim::data::bits GHB_PTR_SIZE{  };
 
   using ghb_ptr_t = unsigned;
 
@@ -28,17 +29,16 @@ struct ghb : public champsim::modules::prefetcher {
   void prefetcher_initialize();
   uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit,
                                     bool useful_prefetch, access_type type, uint32_t metadata_in);
-  // uint32_t prefetcher_cache_fill(
-  //   champsim::address addr, uint32_t set, uint32_t way,
-  //   bool prefetch, champsim::address evicted_address, uint32_t metadata_in
-  // );
 
   void prefetcher_cycle_operate();
 
   std::size_t get_hash(champsim::address addr);
+  static ghb_ptr_t entry_index(ghb_ptr_t ptr);
+  static std::size_t calc_ghbe_distance(ghb_ptr_t lhs, ghb_ptr_t rhs);
   bool is_valid_ghbe(ghb_ptr_t ptr);
   bool has_next_ghbe(ghb_ptr_t ptr);
   ghb_ptr_t make_ghb_ptr(ghb_ptr_t ptr);
+  ghb_ptr_t previous_ghb_ptr(ghb_ptr_t ptr);
 
   // Entries in the index table contain the entire address of the triggering miss.
   // Entries are still accessed by a hash of the triggering miss,
