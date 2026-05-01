@@ -11,8 +11,8 @@
 struct ghb : public champsim::modules::prefetcher {
 
   // Parameters
-  constexpr static std::size_t GHB_ENTRIES = champsim::next_pow2(50000);
-  constexpr static std::size_t INDEX_ENTRIES = champsim::next_pow2(50000);
+  constexpr static std::size_t GHB_ENTRIES = 80000;
+  constexpr static std::size_t INDEX_ENTRIES = 80000;
   constexpr static std::size_t GHB_GENERATIONS = 16;
   constexpr static std::size_t PREFETCH_DEPTH = 16;
   constexpr static std::size_t PREFETCH_WIDTH = 16;
