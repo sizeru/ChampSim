@@ -5,15 +5,15 @@
 #include "modules.h"
 
 #ifndef INDEX_ENTRIES
-#define INDEX_ENTRIES 80000
+#define INDEX_ENTRIES 1024
 #endif
 
 #ifndef GHB_ENTRIES
-#define GHB_ENTRIES 80000
+#define GHB_ENTRIES 4096
 #endif
 
-// Global History Buffer
-struct ghb : public champsim::modules::prefetcher {
+// Global Address Correlation Prefetcher using Global History Buffer
+struct ghb_gac : public champsim::modules::prefetcher {
 
   // Parameters
   constexpr static std::size_t GHB_GENERATIONS = 16;
@@ -35,6 +35,7 @@ struct ghb : public champsim::modules::prefetcher {
   std::size_t get_hash(champsim::address addr);
   static ghb_ptr_t entry_index(ghb_ptr_t ptr);
   static std::size_t calc_ghbe_distance(ghb_ptr_t lhs, ghb_ptr_t rhs);
+  uint64_t fmix64 ( uint64_t k );
   bool is_valid_ghbe(ghb_ptr_t ptr);
   bool has_next_ghbe(ghb_ptr_t ptr);
   ghb_ptr_t make_ghb_ptr(ghb_ptr_t ptr);
@@ -74,4 +75,4 @@ struct ghb : public champsim::modules::prefetcher {
   ghb_ptr_t initial_trigger;
 };
 
-#endif /* GHB */
+#endif /* GHB_GAC_H */
